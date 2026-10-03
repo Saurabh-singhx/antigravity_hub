@@ -115,22 +115,38 @@ class HubForegroundService : Service() {
             .build()
     }
 
-    private fun getHubUrl(): String {
-        try {
-            val dbFile = getDatabasePath("RKStorage")
-            if (dbFile.exists()) {
-                val db = android.database.sqlite.SQLiteDatabase.openDatabase(dbFile.path, null, android.database.sqlite.SQLiteDatabase.OPEN_READONLY)
-                val cursor = db.rawQuery("SELECT value FROM catalystLocalStorage WHERE key = 'antigravity_hub_url'", null)
-                if (cursor.moveToFirst()) {
-                    val url = cursor.getString(0)
+    private fun getStorageValue(targetKey: String): String? {
+        val candidates = listOf(
+            Pair("AsyncStorage", "Storage"),
+            Pair("RKStorage", "catalystLocalStorage")
+        )
+        for ((dbName, tableName) in candidates) {
+            try {
+                val dbFile = getDatabasePath(dbName)
+                if (dbFile.exists()) {
+                    val db = android.database.sqlite.SQLiteDatabase.openDatabase(
+                        dbFile.path,
+                        null,
+                        android.database.sqlite.SQLiteDatabase.OPEN_READONLY
+                    )
+                    val cursor = db.rawQuery("SELECT value FROM $tableName WHERE key = ?", arrayOf(targetKey))
+                    if (cursor.moveToFirst()) {
+                        val v = cursor.getString(0)
+                        cursor.close()
+                        db.close()
+                        if (!v.isNullOrBlank()) return v
+                    }
                     cursor.close()
                     db.close()
-                    if (!url.isNullOrBlank()) return url
                 }
-                cursor.close()
-                db.close()
-            }
-        } catch (_: Exception) {}
+            } catch (_: Exception) {}
+        }
+        return null
+    }
+
+    private fun getHubUrl(): String {
+        val fromStorage = getStorageValue("antigravity_hub_url")
+        if (!fromStorage.isNullOrBlank()) return fromStorage
 
         val prefs = getSharedPreferences("antigravity_hub", Context.MODE_PRIVATE)
         val saved = prefs.getString("hub_url", null)
@@ -141,21 +157,8 @@ class HubForegroundService : Service() {
     }
 
     private fun getHubToken(): String {
-        try {
-            val dbFile = getDatabasePath("RKStorage")
-            if (dbFile.exists()) {
-                val db = android.database.sqlite.SQLiteDatabase.openDatabase(dbFile.path, null, android.database.sqlite.SQLiteDatabase.OPEN_READONLY)
-                val cursor = db.rawQuery("SELECT value FROM catalystLocalStorage WHERE key = 'antigravity_hub_token'", null)
-                if (cursor.moveToFirst()) {
-                    val token = cursor.getString(0)
-                    cursor.close()
-                    db.close()
-                    if (!token.isNullOrBlank()) return token
-                }
-                cursor.close()
-                db.close()
-            }
-        } catch (_: Exception) {}
+        val fromStorage = getStorageValue("antigravity_hub_token")
+        if (!fromStorage.isNullOrBlank()) return fromStorage
 
         val prefs = getSharedPreferences("antigravity_hub", Context.MODE_PRIVATE)
         return prefs.getString("hub_token", "") ?: ""
