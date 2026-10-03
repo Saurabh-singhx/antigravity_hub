@@ -21,7 +21,10 @@ yarn-debug.*
 yarn-error.*
 
 # Generated Native folders (Expo Continuous Native Generation)
-/mobile/android/
+/mobile/android/.gradle/
+/mobile/android/build/
+/mobile/android/app/build/
+/mobile/android/.cxx/
 /mobile/ios/
 .kotlin/
 
