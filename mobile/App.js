@@ -101,6 +101,7 @@ function MainContainer() {
   const wsRef = useRef(null);
   const retryTimeoutRef = useRef(null);
   const pushTokenRef = useRef(null);
+  const seenNotifIdsRef = useRef(new Set());
 
   // Load saved Hub URL
   useEffect(() => {
@@ -139,6 +140,11 @@ function MainContainer() {
       if (res.ok) {
         const data = await res.json();
         setNotifications(data);
+        if (Array.isArray(data)) {
+          data.forEach((n) => {
+            if (n && n.id) seenNotifIdsRef.current.add(n.id);
+          });
+        }
         setConnected(true);
       }
     } catch (e) {
@@ -244,10 +250,20 @@ function MainContainer() {
 
             // Normal notification payload
             const payload = data;
+            const notifId = payload.id;
+
+            // Prevent duplicate banners and alerts for already-seen notifications
+            if (notifId && seenNotifIdsRef.current.has(notifId)) {
+              return;
+            }
+            if (notifId) {
+              seenNotifIdsRef.current.add(notifId);
+            }
+
             if (Platform.OS !== 'web') {
               Vibration.vibrate(payload.level === 'critical' ? [0, 250, 100, 250] : 100);
             }
-            setNotifications((prev) => [payload, ...prev]);
+            setNotifications((prev) => [payload, ...prev.filter((n) => n.id !== notifId)]);
 
             // If action is requested (e.g. OTP prompt), pop up the dialog!
             if (payload.action && payload.action.status === 'pending') {
@@ -288,6 +304,8 @@ function MainContainer() {
         socket.onerror = () => {
           if (!isMounted) return;
           setConnected(false);
+          if (retryTimeoutRef.current) clearTimeout(retryTimeoutRef.current);
+          retryTimeoutRef.current = setTimeout(connectWebSocket, 4000);
         };
       } catch (err) {
         console.log('WS error:', err);
@@ -296,10 +314,21 @@ function MainContainer() {
 
     connectWebSocket();
 
+    // Reconnect and sync when app transitions from background to active
+    const appStateSub = AppState.addEventListener('change', (nextState) => {
+      if (nextState === 'active') {
+        refreshAll();
+        if (!wsRef.current || wsRef.current.readyState === WebSocket.CLOSED) {
+          connectWebSocket();
+        }
+      }
+    });
+
     return () => {
       isMounted = false;
       if (retryTimeoutRef.current) clearTimeout(retryTimeoutRef.current);
       if (socket) socket.close();
+      if (appStateSub && appStateSub.remove) appStateSub.remove();
     };
   }, [hubUrl]);
 
