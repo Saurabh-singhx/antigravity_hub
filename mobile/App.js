@@ -10,6 +10,7 @@ import {
   Platform,
   AppState,
   Alert,
+  PermissionsAndroid,
 } from 'react-native';
 import { SafeAreaProvider, SafeAreaView } from 'react-native-safe-area-context';
 import Constants from 'expo-constants';
@@ -32,6 +33,8 @@ try {
       shouldShowAlert: true,
       shouldPlaySound: true,
       shouldSetBadge: true,
+      shouldShowBanner: true,
+      shouldShowList: true,
     }),
   });
 } catch (e) {
@@ -150,11 +153,19 @@ function MainContainer() {
     fetchNotifications(hubUrl);
   };
 
-  // Setup Push Notifications
+  // Setup Push & System Notifications
   useEffect(() => {
     const setupNotifications = async () => {
       try {
         if (Platform.OS === 'android') {
+          // Explicitly request Android 13+ runtime notification permission
+          if (Platform.Version >= 33) {
+            try {
+              await PermissionsAndroid.request(PermissionsAndroid.PERMISSIONS.POST_NOTIFICATIONS);
+            } catch (pErr) {}
+          }
+
+          // Register high-priority notification channel for status bar
           await Notifications.setNotificationChannelAsync('default', {
             name: 'Antigravity Hub Alerts',
             importance: Notifications.AndroidImportance.MAX,
@@ -163,6 +174,8 @@ function MainContainer() {
             sound: 'default',
             enableVibrate: true,
             showBadge: true,
+            lockscreenVisibility: Notifications.AndroidNotificationVisibility.PUBLIC,
+            bypassDnd: true,
           });
         }
 
@@ -243,7 +256,7 @@ function MainContainer() {
               }
             }
 
-            // Trigger local system notification banner
+            // Trigger local system notification banner on Android notification bar
             try {
               await Notifications.scheduleNotificationAsync({
                 content: {
@@ -251,11 +264,16 @@ function MainContainer() {
                   body: payload.message || '',
                   sound: 'default',
                   priority: Notifications.AndroidNotificationPriority.MAX,
+                  channelId: 'default',
+                  color: '#4f46e5',
+                  vibrate: [0, 250, 250, 250],
                   data: payload,
                 },
                 trigger: null,
               });
-            } catch (notifErr) {}
+            } catch (notifErr) {
+              console.log('Error scheduling banner on notification bar:', notifErr);
+            }
           } catch (e) {
             console.log('WS parse error:', e);
           }
@@ -341,6 +359,45 @@ function MainContainer() {
     return Boolean(act && (n.action_status === 'pending' || (n.action && n.action.status === 'pending')));
   }).length;
 
+  const triggerLocalBanner = async () => {
+    try {
+      if (Platform.OS === 'android') {
+        if (Platform.Version >= 33) {
+          try {
+            await PermissionsAndroid.request(PermissionsAndroid.PERMISSIONS.POST_NOTIFICATIONS);
+          } catch (p) {}
+        }
+        await Notifications.setNotificationChannelAsync('default', {
+          name: 'Antigravity Hub Alerts',
+          importance: Notifications.AndroidImportance.MAX,
+          vibrationPattern: [0, 250, 250, 250],
+          lightColor: '#4f46e5',
+          sound: 'default',
+          enableVibrate: true,
+          showBadge: true,
+          lockscreenVisibility: Notifications.AndroidNotificationVisibility.PUBLIC,
+          bypassDnd: true,
+        });
+      }
+
+      await Notifications.scheduleNotificationAsync({
+        content: {
+          title: '🎯 Interview Prep (Live Banner)',
+          body: 'Top Question: "How do you diagnose and resolve a 504 Gateway Timeout in microservices?" Sourced from Engineering Blogs Digest. Tap to open!',
+          sound: 'default',
+          priority: Notifications.AndroidNotificationPriority.MAX,
+          channelId: 'default',
+          color: '#4f46e5',
+          vibrate: [0, 250, 250, 250],
+        },
+        trigger: null,
+      });
+      Alert.alert('Banner Dispatched', 'Check your phone top notification bar / notification shade!');
+    } catch (e) {
+      Alert.alert('Error', e.message);
+    }
+  };
+
   return (
     <SafeAreaView style={styles.safeArea}>
       <StatusBar barStyle="dark-content" backgroundColor={NeoColors.background} />
@@ -359,6 +416,13 @@ function MainContainer() {
         </View>
 
         <View style={styles.topBtnRow}>
+          <TouchableOpacity
+            onPress={triggerLocalBanner}
+            style={styles.headerBtn}
+          >
+            <Text style={styles.headerBtnText}>🔔 Banner</Text>
+          </TouchableOpacity>
+
           <TouchableOpacity
             onPress={() => setIpModalVisible(true)}
             style={styles.headerBtn}

@@ -67,13 +67,13 @@ class NotificationEngine:
         for token in tokens:
             if not token.startswith("ExponentPushToken"):
                 continue
-            priority = "high" if payload.level in ("warning", "error", "critical") else "default"
             msg = {
                 "to": token,
                 "sound": "default",
                 "title": payload.title,
                 "body": payload.message,
-                "priority": priority,
+                "priority": "high",
+                "channelId": "default",
                 "data": {
                     "notification_id": payload.id,
                     "workflow": payload.workflow,
