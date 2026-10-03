@@ -55,7 +55,9 @@ class CuratorDispatchAgent:
         notif_title = f"{slot_title}: {len(items)} New Questions"
         notif_body = f"Top question: \"{sample_q}\"\nSourced from {items[0].source.source_name}."
 
+        import uuid
         payload = NotificationPayload(
+            id=str(uuid.uuid4()),
             workflow="interview_prep",
             title=notif_title,
             message=notif_body,
