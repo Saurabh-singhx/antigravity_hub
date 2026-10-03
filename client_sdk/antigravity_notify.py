@@ -186,7 +186,34 @@ class AntigravityNotifier:
             logger.warning(f"Error requesting mobile action: {e}")
             return None
 
+    def get_daily_prep(self) -> Dict[str, Any]:
+        """Fetches today's active interview preparation questions from the local Hub."""
+        self.ensure_hub_running()
+        try:
+            r = requests.get(f"{self.hub_url}/api/qna/daily", timeout=2.0)
+            if r.status_code == 200:
+                return r.json()
+        except Exception as e:
+            logger.warning(f"Error fetching daily prep: {e}")
+        return {"items": [], "total_questions": 0}
+
+    def trigger_prep_pipeline(self, slot_id: Optional[int] = None, force: bool = False) -> Dict[str, Any]:
+        """Triggers the autonomous multi-agent interview questions pipeline."""
+        self.ensure_hub_running()
+        try:
+            r = requests.post(
+                f"{self.hub_url}/api/qna/trigger",
+                json={"slot_id": slot_id, "force": force},
+                timeout=15.0,
+            )
+            if r.status_code == 200:
+                return r.json()
+        except Exception as e:
+            logger.warning(f"Error triggering prep pipeline: {e}")
+        return {"status": "error"}
+
 
 # Global singleton instance for easy import:
 # from client_sdk.antigravity_notify import notify
 notify = AntigravityNotifier()
+
