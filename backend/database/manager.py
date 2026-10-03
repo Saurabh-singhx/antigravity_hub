@@ -48,6 +48,8 @@ class DatabaseManager:
             action_response = payload.action.response_value if payload.action else None
 
             created_at_val = payload.created_at or time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+            if payload.action and payload.action.action_secret:
+                payload.metadata["action_secret"] = payload.action.action_secret
 
             c.execute(
                 """
@@ -118,6 +120,7 @@ class DatabaseManager:
                         item["action_options"] = json.loads(item["action_options"])
                     except Exception:
                         item["action_options"] = []
+                item["action_secret"] = item["metadata"].get("action_secret")
                 results.append(item)
             return results
 

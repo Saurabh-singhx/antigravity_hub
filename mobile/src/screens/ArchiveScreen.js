@@ -12,7 +12,7 @@ import { NeoColors } from '../theme/neomorphism';
 import QuestionButtonCard from '../components/QuestionButtonCard';
 import PaginationControls from '../components/PaginationControls';
 
-export default function ArchiveScreen({ hubUrl }) {
+export default function ArchiveScreen({ hubUrl, hubToken }) {
   const [page, setPage] = useState(1);
   const [search, setSearch] = useState('');
   const [activeCategory, setActiveCategory] = useState('ALL');
@@ -39,7 +39,12 @@ export default function ArchiveScreen({ hubUrl }) {
         query += `&category=${encodeURIComponent(activeCategory)}`;
       }
 
-      const res = await fetch(query);
+      const headers = {
+        'Content-Type': 'application/json',
+        ...(hubToken ? { 'X-Hub-Token': hubToken, 'Authorization': `Bearer ${hubToken}` } : {}),
+      };
+
+      const res = await fetch(query, { headers });
       if (res.ok) {
         const json = await res.json();
         setData(json);

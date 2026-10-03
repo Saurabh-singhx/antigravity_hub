@@ -35,6 +35,7 @@ class NotificationAction(BaseModel):
     status: ActionStatus = ActionStatus.PENDING
     response_value: Optional[str] = None
     resolved_at: Optional[str] = None
+    action_secret: Optional[str] = None  # Single-use nonce for verified mobile response
 
 
 class NotificationPayload(BaseModel):
@@ -53,3 +54,4 @@ class NotificationPayload(BaseModel):
 class ActionResponseRequest(BaseModel):
     action_id: str
     response_value: str                       # e.g., "684920" (OTP) or "APPROVE" or "SKIP"
+    action_secret: Optional[str] = None       # Optional verified nonce

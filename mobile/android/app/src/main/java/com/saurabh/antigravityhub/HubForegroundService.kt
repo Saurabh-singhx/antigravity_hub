@@ -116,12 +116,49 @@ class HubForegroundService : Service() {
     }
 
     private fun getHubUrl(): String {
+        try {
+            val dbFile = getDatabasePath("RKStorage")
+            if (dbFile.exists()) {
+                val db = android.database.sqlite.SQLiteDatabase.openDatabase(dbFile.path, null, android.database.sqlite.SQLiteDatabase.OPEN_READONLY)
+                val cursor = db.rawQuery("SELECT value FROM catalystLocalStorage WHERE key = 'antigravity_hub_url'", null)
+                if (cursor.moveToFirst()) {
+                    val url = cursor.getString(0)
+                    cursor.close()
+                    db.close()
+                    if (!url.isNullOrBlank()) return url
+                }
+                cursor.close()
+                db.close()
+            }
+        } catch (_: Exception) {}
+
         val prefs = getSharedPreferences("antigravity_hub", Context.MODE_PRIVATE)
         val saved = prefs.getString("hub_url", null)
         if (!saved.isNullOrBlank()) {
             return saved
         }
         return "http://192.168.31.210:8765"
+    }
+
+    private fun getHubToken(): String {
+        try {
+            val dbFile = getDatabasePath("RKStorage")
+            if (dbFile.exists()) {
+                val db = android.database.sqlite.SQLiteDatabase.openDatabase(dbFile.path, null, android.database.sqlite.SQLiteDatabase.OPEN_READONLY)
+                val cursor = db.rawQuery("SELECT value FROM catalystLocalStorage WHERE key = 'antigravity_hub_token'", null)
+                if (cursor.moveToFirst()) {
+                    val token = cursor.getString(0)
+                    cursor.close()
+                    db.close()
+                    if (!token.isNullOrBlank()) return token
+                }
+                cursor.close()
+                db.close()
+            }
+        } catch (_: Exception) {}
+
+        val prefs = getSharedPreferences("antigravity_hub", Context.MODE_PRIVATE)
+        return prefs.getString("hub_token", "") ?: ""
     }
 
     private fun startWebSocket() {
@@ -138,7 +175,9 @@ class HubForegroundService : Service() {
         }
 
         val hubBase = getHubUrl()
-        val wsUrl = hubBase.replace("http://", "ws://").replace("https://", "wss://").trimEnd('/') + "/ws/notifications"
+        val token = getHubToken()
+        val tokenParam = if (token.isNotBlank()) "?token=$token" else ""
+        val wsUrl = hubBase.replace("http://", "ws://").replace("https://", "wss://").trimEnd('/') + "/ws/notifications" + tokenParam
         Log.i(TAG, "Connecting background WebSocket to: $wsUrl")
 
         val request = Request.Builder().url(wsUrl).build()

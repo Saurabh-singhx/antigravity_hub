@@ -42,6 +42,7 @@ build/
 *.log
 backend/data/*.db
 backend/data/active_port.txt
+backend/data/.hub_secret
 backend/data/server.log
 backend/data/screenshots/*
 !backend/data/screenshots/.gitkeep

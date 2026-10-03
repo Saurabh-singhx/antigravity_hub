@@ -4,25 +4,31 @@ import json
 import logging
 import os
 from pathlib import Path
+import secrets
 import socket
 import time
 from typing import Any, Dict, List, Optional
 
-from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
+from fastapi import Depends, FastAPI, HTTPException, WebSocket, WebSocketDisconnect, status
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.staticfiles import StaticFiles
+from fastapi.responses import FileResponse
 
 from agents.orchestrator import QnAOrchestrator
+from api.deps import sanitize_filename, verify_hub_token
 from api.routes_notifications import router as notifications_router
 from api.routes_qna import router as qna_router
 from api.routes_system import router as system_router
 from config.settings import (
     ACTIVE_PORT_FILE,
     BASE_DIR,
+    CORS_ALLOWED_ORIGINS,
     DB_PATH,
+    HUB_AUTH_REQUIRED,
     HUB_HOST,
     HUB_PORT,
+    SCREENSHOT_MAX_AGE_HOURS,
     SCREENSHOTS_DIR,
+    get_or_create_hub_token,
 )
 from core.scheduler import BackgroundScheduler
 from database.manager import DatabaseManager
@@ -44,10 +50,34 @@ orchestrator = QnAOrchestrator(db, engine)
 scheduler = BackgroundScheduler(orchestrator, db)
 
 
+def prune_old_screenshots(max_age_hours: int = SCREENSHOT_MAX_AGE_HOURS):
+    """Deletes workflow screenshots older than retention window to prevent disk leakage."""
+    try:
+        now = time.time()
+        max_age_sec = max_age_hours * 3600
+        pruned = 0
+        for f in SCREENSHOTS_DIR.glob("*"):
+            if f.is_file() and f.name != ".gitkeep":
+                if now - f.stat().st_mtime > max_age_sec:
+                    f.unlink(missing_ok=True)
+                    pruned += 1
+        if pruned > 0:
+            logger.info(f"🧹 Pruned {pruned} screenshots older than {max_age_hours}h.")
+    except Exception as e:
+        logger.debug(f"Error during screenshot pruning: {e}")
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Lifecycle manager: starts background boot-up slot scheduler and graceful teardown."""
     logger.info("Initializing Antigravity Hub services...")
+    # Prune old screenshots on boot
+    prune_old_screenshots()
+    # Log auth token status
+    token = get_or_create_hub_token()
+    logger.info(f"🔒 Antigravity Hub Security: Token Auth is {'ENABLED' if HUB_AUTH_REQUIRED else 'DISABLED'}")
+    logger.info(f"🔑 Antigravity Hub Token: {token}")
+
     # Start 3-times-a-day background scheduler
     scheduler.start()
     yield
@@ -58,33 +88,57 @@ async def lifespan(app: FastAPI):
 app = FastAPI(
     title="Antigravity Hub • Local Notification & Interview Prep Relay",
     description="Centralized local relay connecting Antigravity CLI workflows and autonomous interview preparation to mobile.",
-    version="2.0.0",
+    version="2.1.0",
     lifespan=lifespan,
 )
 
-# Enable CORS for React Native and Expo web
+# Tightened CORS: strictly allows local development bundlers, rejects arbitrary internet origins
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=CORS_ALLOWED_ORIGINS,
+    allow_origin_regex=r"^http://(localhost|127\.0\.0\.1)(:\d+)?$",
     allow_credentials=True,
-    allow_methods=["*"],
+    allow_methods=["GET", "POST", "DELETE", "OPTIONS"],
     allow_headers=["*"],
 )
 
-# Static Screenshots Mount
-SCREENSHOTS_DIR.mkdir(parents=True, exist_ok=True)
-app.mount("/screenshots", StaticFiles(directory=str(SCREENSHOTS_DIR)), name="screenshots")
-
-# Mount Routers
+# Mount API Routers
 app.include_router(system_router)
 app.include_router(notifications_router)
 app.include_router(qna_router)
 
 
-# Real-time WebSocket Endpoint
+# Authenticated & Sanitized Screenshot Endpoints
+@app.get("/api/screenshots/{filename}")
+@app.get("/screenshots/{filename}")
+def get_screenshot(
+    filename: str,
+    _token: str = Depends(verify_hub_token),
+):
+    """
+    Serves captured workflow screenshots with strict path-traversal
+    validation and token authentication.
+    """
+    safe_name = sanitize_filename(filename)
+    file_path = SCREENSHOTS_DIR / safe_name
+    if not file_path.exists() or not file_path.is_file():
+        raise HTTPException(status_code=404, detail="Screenshot not found")
+    return FileResponse(path=str(file_path))
+
+
+# Real-time WebSocket Endpoint (Protected with Hub Token)
 @app.websocket("/ws/notifications")
 async def websocket_endpoint(websocket: WebSocket):
-    """Real-time WebSocket connection for live mobile app updates."""
+    """Real-time WebSocket connection for live mobile app updates. Protected by Hub Token."""
+    token = websocket.query_params.get("token") or websocket.headers.get("x-hub-token")
+    if HUB_AUTH_REQUIRED:
+        expected = get_or_create_hub_token()
+        if not token or not secrets.compare_digest(token.strip(), expected):
+            client_host = websocket.client.host if websocket.client else "unknown"
+            logger.warning(f"Rejecting unauthorized WebSocket connection from {client_host}")
+            await websocket.close(code=status.WS_1008_POLICY_VIOLATION)
+            return
+
     await engine.connect(websocket)
     try:
         while True:
@@ -95,9 +149,13 @@ async def websocket_endpoint(websocket: WebSocket):
                 if msg.get("type") == "action_response":
                     act_id = msg.get("action_id")
                     val = msg.get("value")
+                    act_secret = msg.get("action_secret")
                     if act_id and val is not None:
-                        engine.resolve_action(act_id, str(val))
-                        db.resolve_action(act_id, str(val))
+                        if engine.verify_action_secret(act_id, act_secret):
+                            engine.resolve_action(act_id, str(val))
+                            db.resolve_action(act_id, str(val))
+                        else:
+                            logger.warning(f"WebSocket action response rejected: invalid action_secret for '{act_id}'")
             except Exception:
                 pass
     except WebSocketDisconnect:

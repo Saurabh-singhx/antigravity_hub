@@ -14,15 +14,20 @@ class AntigravityNotifier:
     """
     Universal Client SDK for sending notifications and requesting human actions
     from ANY Antigravity CLI workflow, coding agent, or automation script to the mobile app.
+    Automatically discovers active port and authenticates using .hub_secret.
     """
 
-    def __init__(self, hub_url: Optional[str] = None):
+    def __init__(self, hub_url: Optional[str] = None, token: Optional[str] = None):
+        backend_dir = Path(__file__).resolve().parent.parent / "backend"
+        data_dir = backend_dir / "data"
+
+        # Hub URL Discovery
         if not hub_url:
             env_url = os.environ.get("ANTIGRAVITY_HUB_URL")
             if env_url:
                 self.hub_url = env_url.rstrip("/")
             else:
-                port_file = Path(__file__).resolve().parent.parent / "backend" / "data" / "active_port.txt"
+                port_file = data_dir / "active_port.txt"
                 if port_file.exists():
                     try:
                         p = port_file.read_text().strip()
@@ -33,13 +38,33 @@ class AntigravityNotifier:
                     self.hub_url = "http://localhost:8765"
         else:
             self.hub_url = hub_url.rstrip("/")
-        self.screenshots_dir = Path(__file__).resolve().parent.parent / "backend" / "data" / "screenshots"
+
+        # Security Token Discovery
+        self.token = token or os.environ.get("ANTIGRAVITY_HUB_TOKEN") or os.environ.get("HUB_API_KEY")
+        if not self.token:
+            secret_file = data_dir / ".hub_secret"
+            if secret_file.exists():
+                try:
+                    self.token = secret_file.read_text().strip()
+                except Exception:
+                    self.token = ""
+            else:
+                self.token = ""
+
+        self.session = requests.Session()
+        if self.token:
+            self.session.headers.update({
+                "X-Hub-Token": self.token,
+                "Authorization": f"Bearer {self.token}",
+            })
+
+        self.screenshots_dir = data_dir / "screenshots"
         self.screenshots_dir.mkdir(parents=True, exist_ok=True)
 
     def is_hub_online(self) -> bool:
         """Checks if local Antigravity Hub backend is running."""
         try:
-            r = requests.get(f"{self.hub_url}/api/status", timeout=0.8)
+            r = self.session.get(f"{self.hub_url}/api/status", timeout=0.8)
             return r.status_code == 200
         except Exception:
             return False
@@ -77,6 +102,19 @@ class AntigravityNotifier:
                         self.hub_url = f"http://localhost:{p}"
                     except Exception:
                         pass
+                # Also reload token if it was just generated
+                if not self.token:
+                    secret_file = backend_dir / "data" / ".hub_secret"
+                    if secret_file.exists():
+                        try:
+                            self.token = secret_file.read_text().strip()
+                            self.session.headers.update({
+                                "X-Hub-Token": self.token,
+                                "Authorization": f"Bearer {self.token}",
+                            })
+                        except Exception:
+                            pass
+
                 if self.is_hub_online():
                     logger.info(f"[AntigravityNotify] Hub backend active on {self.hub_url}")
                     return True
@@ -95,7 +133,9 @@ class AntigravityNotifier:
         dest = self.screenshots_dir / filename
         try:
             shutil.copy2(src, dest)
-            return f"{self.hub_url}/screenshots/{filename}"
+            # Include token query param so mobile Image components can view securely
+            token_query = f"?token={self.token}" if self.token else ""
+            return f"{self.hub_url}/api/screenshots/{filename}{token_query}"
         except Exception as e:
             logger.debug(f"Could not copy screenshot to hub: {e}")
             return None
@@ -126,7 +166,7 @@ class AntigravityNotifier:
             "metadata": metadata or {},
         }
         try:
-            r = requests.post(f"{self.hub_url}/api/notify", json=payload, timeout=2.5)
+            r = self.session.post(f"{self.hub_url}/api/notify", json=payload, timeout=2.5)
             return r.status_code == 200
         except Exception as e:
             logger.debug(f"[AntigravityNotify] Hub unreachable ({e}). Notification skipped.")
@@ -173,7 +213,7 @@ class AntigravityNotifier:
 
         try:
             logger.info(f"Waiting for mobile action '{prompt}' (Timeout: {timeout_seconds}s)...")
-            r = requests.post(f"{self.hub_url}/api/request-action", json=payload, timeout=timeout_seconds + 5)
+            r = self.session.post(f"{self.hub_url}/api/request-action", json=payload, timeout=timeout_seconds + 5)
             if r.status_code == 200:
                 data = r.json()
                 if data.get("status") == "resolved":
@@ -190,7 +230,7 @@ class AntigravityNotifier:
         """Fetches today's active interview preparation questions from the local Hub."""
         self.ensure_hub_running()
         try:
-            r = requests.get(f"{self.hub_url}/api/qna/daily", timeout=2.0)
+            r = self.session.get(f"{self.hub_url}/api/qna/daily", timeout=2.0)
             if r.status_code == 200:
                 return r.json()
         except Exception as e:
@@ -201,7 +241,7 @@ class AntigravityNotifier:
         """Triggers the autonomous multi-agent interview questions pipeline."""
         self.ensure_hub_running()
         try:
-            r = requests.post(
+            r = self.session.post(
                 f"{self.hub_url}/api/qna/trigger",
                 json={"slot_id": slot_id, "force": force},
                 timeout=15.0,
@@ -216,4 +256,3 @@ class AntigravityNotifier:
 # Global singleton instance for easy import:
 # from client_sdk.antigravity_notify import notify
 notify = AntigravityNotifier()
-

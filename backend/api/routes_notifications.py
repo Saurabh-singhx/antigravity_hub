@@ -1,10 +1,12 @@
 import asyncio
 import logging
+import secrets
 import time
-import uuid
 from typing import Optional
+import uuid
 from fastapi import APIRouter, Depends, HTTPException, Query
 
+from api.deps import require_rate_limit, verify_hub_token
 from database.manager import DatabaseManager
 from models.notifications import (
     ActionResponseRequest,
@@ -14,7 +16,7 @@ from models.notifications import (
 from services.notification_engine import NotificationEngine
 
 logger = logging.getLogger("AntigravityHub.RoutesNotifications")
-router = APIRouter(prefix="/api", tags=["Notifications"])
+router = APIRouter(prefix="/api", tags=["Notifications"], dependencies=[Depends(verify_hub_token)])
 
 
 def get_db():
@@ -36,6 +38,7 @@ async def send_notification(
     """
     Called by ANY Antigravity CLI workflow (e.g. auto_job_apply)
     to broadcast an event, alert, or milestone to the mobile app.
+    Protected by Hub Token.
     """
     if not payload.id:
         payload.id = str(uuid.uuid4())
@@ -66,6 +69,7 @@ async def request_action(
 ):
     """
     Called when a workflow needs human input from mobile (e.g., OTP or approval).
+    Generates a cryptographically secure single-use action_secret for verification.
     Blocks asynchronously until user responds on their phone or timeout expires!
     """
     if not payload.id:
@@ -79,6 +83,10 @@ async def request_action(
     if not action.action_id:
         action.action_id = str(uuid.uuid4())
 
+    # Generate single-use nonce for verified mobile response
+    action_secret = secrets.token_urlsafe(16)
+    action.action_secret = action_secret
+
     logger.info(f"[{payload.workflow}] Action Requested: '{action.prompt}' (ID: {action.action_id})")
 
     # Save initial pending state
@@ -90,8 +98,8 @@ async def request_action(
     if tokens:
         engine.dispatch_expo_push(tokens, payload)
 
-    # Register Future & wait for mobile response
-    future = engine.register_action_future(action.action_id)
+    # Register Future with action secret & wait for mobile response
+    future = engine.register_action_future(action.action_id, action_secret=action_secret)
     try:
         response_val = await asyncio.wait_for(future, timeout=float(action.timeout_seconds))
         action.status = ActionStatus.RESOLVED
@@ -112,16 +120,31 @@ async def request_action(
         }
     finally:
         engine.action_futures.pop(action.action_id, None)
+        engine.action_secrets.pop(action.action_id, None)
 
 
-@router.post("/actions/{action_id}/respond")
+@router.post(
+    "/actions/{action_id}/respond",
+    dependencies=[Depends(require_rate_limit(max_requests=10, window_seconds=60, key_prefix="action_respond"))],
+)
 async def respond_to_action(
     action_id: str,
     body: ActionResponseRequest,
     db: DatabaseManager = Depends(get_db),
     engine: NotificationEngine = Depends(get_engine),
 ):
-    """Called by mobile app when user enters an OTP or taps an action button."""
+    """
+    Called by mobile app when user enters an OTP or taps an action button.
+    Validates single-use action_secret and enforces per-IP rate limiting.
+    """
+    # Verify action_secret if one was registered for this action
+    if not engine.verify_action_secret(action_id, body.action_secret):
+        logger.warning(f"Unauthorized action response attempt for action '{action_id}' - invalid action secret")
+        raise HTTPException(
+            status_code=403,
+            detail="Forbidden: Invalid or expired action secret for this action",
+        )
+
     success = engine.resolve_action(action_id, body.response_value)
     db.resolve_action(action_id, body.response_value)
     logger.info(f"Mobile user responded to action '{action_id}' with: '{body.response_value}'")

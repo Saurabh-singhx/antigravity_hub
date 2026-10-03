@@ -83,6 +83,7 @@ export default function App() {
 
 function MainContainer() {
   const [hubUrl, setHubUrl] = useState(getInitialHubUrl());
+  const [hubToken, setHubToken] = useState('');
   const [connected, setConnected] = useState(false);
   const [activeTab, setActiveTab] = useState('PREP'); // 'PREP', 'ARCHIVE', 'ALERTS', 'STATUS'
 
@@ -103,23 +104,36 @@ function MainContainer() {
   const pushTokenRef = useRef(null);
   const seenNotifIdsRef = useRef(new Set());
 
-  // Load saved Hub URL
+  // Load saved Hub URL and Token
   useEffect(() => {
-    AsyncStorage.getItem('antigravity_hub_url')
-      .then((saved) => {
-        if (saved && saved.trim()) {
-          const cleaned = cleanHubUrl(saved);
-          setHubUrl(cleaned);
+    Promise.all([
+      AsyncStorage.getItem('antigravity_hub_url'),
+      AsyncStorage.getItem('antigravity_hub_token'),
+    ])
+      .then(([savedUrl, savedToken]) => {
+        if (savedUrl && savedUrl.trim()) {
+          setHubUrl(cleanHubUrl(savedUrl));
+        }
+        if (savedToken && savedToken.trim()) {
+          setHubToken(savedToken.trim());
         }
       })
       .catch((e) => console.log('AsyncStorage load error:', e));
   }, []);
 
+  // Helper to generate auth headers
+  const getAuthHeaders = (token = hubToken) => ({
+    'Content-Type': 'application/json',
+    ...(token ? { 'X-Hub-Token': token, 'Authorization': `Bearer ${token}` } : {}),
+  });
+
   // Fetch Daily QnA feed (resets daily on mobile)
-  const fetchDailyFeed = async (targetUrl = hubUrl) => {
+  const fetchDailyFeed = async (targetUrl = hubUrl, targetToken = hubToken) => {
     try {
       setLoadingDaily(true);
-      const res = await fetch(`${targetUrl}/api/qna/daily`);
+      const res = await fetch(`${targetUrl}/api/qna/daily`, {
+        headers: getAuthHeaders(targetToken),
+      });
       if (res.ok) {
         const json = await res.json();
         setDailyData(json);
@@ -133,10 +147,12 @@ function MainContainer() {
   };
 
   // Fetch Live Notifications
-  const fetchNotifications = async (targetUrl = hubUrl) => {
+  const fetchNotifications = async (targetUrl = hubUrl, targetToken = hubToken) => {
     try {
       setLoadingNotifs(true);
-      const res = await fetch(`${targetUrl}/api/notifications?limit=40`);
+      const res = await fetch(`${targetUrl}/api/notifications?limit=40`, {
+        headers: getAuthHeaders(targetToken),
+      });
       if (res.ok) {
         const data = await res.json();
         setNotifications(data);
@@ -154,9 +170,9 @@ function MainContainer() {
     }
   };
 
-  const refreshAll = () => {
-    fetchDailyFeed(hubUrl);
-    fetchNotifications(hubUrl);
+  const refreshAll = (targetUrl = hubUrl, targetToken = hubToken) => {
+    fetchDailyFeed(targetUrl, targetToken);
+    fetchNotifications(targetUrl, targetToken);
   };
 
   // Setup Push & System Notifications
@@ -198,7 +214,7 @@ function MainContainer() {
             pushTokenRef.current = tokenData.data;
             fetch(`${hubUrl}/api/devices/register`, {
               method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
+              headers: getAuthHeaders(),
               body: JSON.stringify({
                 device_id: 'android_' + (Platform.OS || 'mobile'),
                 device_name: 'Android Mobile',
@@ -214,7 +230,7 @@ function MainContainer() {
     };
 
     setupNotifications();
-  }, [hubUrl]);
+  }, [hubUrl, hubToken]);
 
   // Connect WebSocket for 0ms Live Updates
   useEffect(() => {
@@ -225,7 +241,8 @@ function MainContainer() {
 
     const connectWebSocket = () => {
       if (!isMounted) return;
-      const wsUrl = hubUrl.replace('http://', 'ws://').replace('https://', 'wss://') + '/ws/notifications';
+      const tokenQuery = hubToken ? `?token=${encodeURIComponent(hubToken)}` : '';
+      const wsUrl = hubUrl.replace('http://', 'ws://').replace('https://', 'wss://') + '/ws/notifications' + tokenQuery;
 
       try {
         socket = new WebSocket(wsUrl);
@@ -244,7 +261,7 @@ function MainContainer() {
 
             // Handle QnA update event
             if (data.event === 'qna_updated') {
-              fetchDailyFeed(hubUrl);
+              fetchDailyFeed(hubUrl, hubToken);
               return;
             }
 
@@ -317,7 +334,7 @@ function MainContainer() {
     // Reconnect and sync when app transitions from background to active
     const appStateSub = AppState.addEventListener('change', (nextState) => {
       if (nextState === 'active') {
-        refreshAll();
+        refreshAll(hubUrl, hubToken);
         if (!wsRef.current || wsRef.current.readyState === WebSocket.CLOSED) {
           connectWebSocket();
         }
@@ -330,7 +347,7 @@ function MainContainer() {
       if (socket) socket.close();
       if (appStateSub && appStateSub.remove) appStateSub.remove();
     };
-  }, [hubUrl]);
+  }, [hubUrl, hubToken]);
 
   // Handle responding to Action (OTP / Approve / Skip)
   const handleSubmitAction = async (actionId, value) => {
@@ -340,10 +357,19 @@ function MainContainer() {
     }
 
     try {
+      const notif = notifications.find(
+        (n) => n.action_id === actionId || (n.action && n.action.action_id === actionId)
+      );
+      const actionSecret = notif?.action?.action_secret || null;
+
       const res = await fetch(`${hubUrl}/api/actions/${actionId}/respond`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ action_id: actionId, response_value: value.trim() }),
+        headers: getAuthHeaders(),
+        body: JSON.stringify({
+          action_id: actionId,
+          response_value: value.trim(),
+          action_secret: actionSecret,
+        }),
       });
 
       if (res.ok) {
@@ -372,15 +398,21 @@ function MainContainer() {
 
   const handleDismissNotification = async (id) => {
     setNotifications((prev) => prev.filter((n) => n.id !== id));
-    fetch(`${hubUrl}/api/notifications/${id}`, { method: 'DELETE' }).catch(() => {});
+    fetch(`${hubUrl}/api/notifications/${id}`, {
+      method: 'DELETE',
+      headers: getAuthHeaders(),
+    }).catch(() => {});
   };
 
-  const handleSaveHubUrl = (newUrl) => {
-    const cleaned = cleanHubUrl(newUrl);
-    setHubUrl(cleaned);
-    AsyncStorage.setItem('antigravity_hub_url', cleaned).catch(() => {});
+  const handleSaveHubConfig = (newUrl, newToken) => {
+    const cleanedUrl = cleanHubUrl(newUrl);
+    const cleanedToken = (newToken || '').trim();
+    setHubUrl(cleanedUrl);
+    setHubToken(cleanedToken);
+    AsyncStorage.setItem('antigravity_hub_url', cleanedUrl).catch(() => {});
+    AsyncStorage.setItem('antigravity_hub_token', cleanedToken).catch(() => {});
     setIpModalVisible(false);
-    refreshAll();
+    refreshAll(cleanedUrl, cleanedToken);
   };
 
   const pendingActionCount = notifications.filter((n) => {
@@ -512,42 +544,51 @@ function MainContainer() {
           <TodayPrepScreen
             dailyData={dailyData}
             loading={loadingDaily}
-            onRefresh={() => fetchDailyFeed(hubUrl)}
+            onRefresh={() => fetchDailyFeed(hubUrl, hubToken)}
             hubUrl={hubUrl}
+            hubToken={hubToken}
             connected={connected}
           />
         )}
 
         {activeTab === 'ARCHIVE' && (
-          <ArchiveScreen hubUrl={hubUrl} />
+          <ArchiveScreen hubUrl={hubUrl} hubToken={hubToken} />
         )}
 
         {activeTab === 'ALERTS' && (
           <AlertsScreen
             notifications={notifications}
             loading={loadingNotifs}
-            onRefresh={() => fetchNotifications(hubUrl)}
+            onRefresh={() => fetchNotifications(hubUrl, hubToken)}
             onDismiss={handleDismissNotification}
             onSubmitAction={handleSubmitAction}
-            onOpenScreenshot={(url) => setSelectedScreenshot(url)}
+            onOpenScreenshot={(url) => {
+              let finalUrl = url;
+              if (finalUrl && hubToken && !finalUrl.includes('token=')) {
+                finalUrl += (finalUrl.includes('?') ? '&' : '?') + `token=${encodeURIComponent(hubToken)}`;
+              }
+              setSelectedScreenshot(finalUrl);
+            }}
           />
         )}
 
         {activeTab === 'STATUS' && (
           <StatusScreen
             hubUrl={hubUrl}
+            hubToken={hubToken}
             connected={connected}
             onOpenSettings={() => setIpModalVisible(true)}
-            onRefresh={refreshAll}
+            onRefresh={() => refreshAll(hubUrl, hubToken)}
           />
         )}
       </View>
 
-      {/* IP Settings Modal */}
+      {/* IP & Security Settings Modal */}
       <HubSettingsModal
         visible={ipModalVisible}
         currentUrl={hubUrl}
-        onSave={handleSaveHubUrl}
+        currentToken={hubToken}
+        onSave={handleSaveHubConfig}
         onClose={() => setIpModalVisible(false)}
       />
 

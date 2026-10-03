@@ -4,6 +4,7 @@ from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException, Query
 
 from agents.orchestrator import QnAOrchestrator
+from api.deps import require_rate_limit, verify_hub_token
 from core.time_slots import TimeSlotEngine
 from database.manager import DatabaseManager
 from models.qna import (
@@ -14,7 +15,7 @@ from models.qna import (
 from services.qna_service import QnAService
 
 logger = logging.getLogger("AntigravityHub.RoutesQnA")
-router = APIRouter(prefix="/api/qna", tags=["Interview Prep QnA"])
+router = APIRouter(prefix="/api/qna", tags=["Interview Prep QnA"], dependencies=[Depends(verify_hub_token)])
 
 
 def get_db():
@@ -82,7 +83,10 @@ def get_slots_status(
     }
 
 
-@router.post("/trigger")
+@router.post(
+    "/trigger",
+    dependencies=[Depends(require_rate_limit(max_requests=5, window_seconds=60, key_prefix="qna_trigger"))],
+)
 async def trigger_slot_manually(
     req: QnAManualTriggerRequest,
     orchestrator: QnAOrchestrator = Depends(get_orchestrator),

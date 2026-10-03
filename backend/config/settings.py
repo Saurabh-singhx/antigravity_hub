@@ -18,6 +18,48 @@ AUTO_JOB_APPLY_DB = Path("/home/saurabh/coding/auto_job_apply/data/job_applicati
 HUB_PORT = int(os.environ.get("HUB_PORT", 8765))
 HUB_HOST = os.environ.get("HUB_HOST", "0.0.0.0")
 
+# Security & Authentication Settings
+HUB_SECRET_FILE = DATA_DIR / ".hub_secret"
+HUB_AUTH_REQUIRED = os.environ.get("HUB_AUTH_REQUIRED", "true").lower() in ("true", "1", "yes")
+SCREENSHOT_MAX_AGE_HOURS = int(os.environ.get("SCREENSHOT_MAX_AGE_HOURS", 24))
+
+# Explicit allowed origins for CORS (Mobile apps do not enforce browser CORS)
+CORS_ALLOWED_ORIGINS = [
+    "http://localhost:8081",
+    "http://localhost:19006",
+    "http://localhost:8765",
+    "http://127.0.0.1:8765",
+    "http://localhost:3000",
+]
+
+
+def get_or_create_hub_token() -> str:
+    """
+    Retrieves or generates a cryptographically secure 32-byte hex token.
+    Reads from ANTIGRAVITY_HUB_TOKEN, HUB_API_KEY, or .hub_secret file with 0600 permissions.
+    """
+    env_token = os.environ.get("ANTIGRAVITY_HUB_TOKEN") or os.environ.get("HUB_API_KEY")
+    if env_token and env_token.strip():
+        return env_token.strip()
+
+    if HUB_SECRET_FILE.exists():
+        try:
+            token = HUB_SECRET_FILE.read_text().strip()
+            if token:
+                return token
+        except Exception:
+            pass
+
+    import secrets
+    new_token = secrets.token_hex(32)
+    HUB_SECRET_FILE.parent.mkdir(parents=True, exist_ok=True)
+    HUB_SECRET_FILE.write_text(new_token)
+    try:
+        os.chmod(HUB_SECRET_FILE, 0o600)
+    except Exception:
+        pass
+    return new_token
+
 # Daily QnA Scheduling Slots
 # Slot 1 (Morning): 04:00 - 11:00 (4:00 AM - 10:59 AM)
 # Slot 2 (Afternoon): 11:00 - 17:00 (11:00 AM - 4:59 PM)

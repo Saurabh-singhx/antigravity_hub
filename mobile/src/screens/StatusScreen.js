@@ -14,6 +14,7 @@ import NeoButton from '../components/NeoButton';
 
 export default function StatusScreen({
   hubUrl,
+  hubToken,
   connected,
   onOpenSettings,
   onRefresh,
@@ -21,12 +22,17 @@ export default function StatusScreen({
   const [testing, setTesting] = useState(false);
   const [triggering, setTriggering] = useState(false);
 
+  const authHeaders = {
+    'Content-Type': 'application/json',
+    ...(hubToken ? { 'X-Hub-Token': hubToken, 'Authorization': `Bearer ${hubToken}` } : {}),
+  };
+
   const handleTestNotification = async () => {
     setTesting(true);
     try {
       const res = await fetch(`${hubUrl}/api/notify`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: authHeaders,
         body: JSON.stringify({
           workflow: 'auto_job_apply',
           title: '🎯 Test Application Alert',
@@ -53,7 +59,7 @@ export default function StatusScreen({
     try {
       const res = await fetch(`${hubUrl}/api/qna/trigger`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: authHeaders,
         body: JSON.stringify({ force: true }),
       });
       const data = await res.json();
@@ -86,9 +92,14 @@ export default function StatusScreen({
         <Text style={styles.infoLabel}>Hub Address:</Text>
         <Text style={styles.infoValue}>{hubUrl}</Text>
 
+        <Text style={styles.infoLabel}>Security Auth:</Text>
+        <Text style={[styles.infoValue, { color: hubToken ? '#16a34a' : '#d97706', fontWeight: '700' }]}>
+          {hubToken ? '🔒 Authenticated (X-Hub-Token set)' : '⚠️ Unauthenticated (No Token configured)'}
+        </Text>
+
         <View style={styles.btnRow}>
           <NeoButton
-            title="⚙️ Change IP"
+            title="⚙️ Settings & Key"
             onPress={onOpenSettings}
             style={{ flex: 1, marginRight: 8 }}
           />

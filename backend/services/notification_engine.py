@@ -20,6 +20,8 @@ class NotificationEngine:
         self.active_websockets: Set[WebSocket] = set()
         # Maps action_id -> asyncio.Future for waiting CLI workflows
         self.action_futures: Dict[str, asyncio.Future] = {}
+        # Maps action_id -> action_secret for verification
+        self.action_secrets: Dict[str, str] = {}
 
     async def connect(self, websocket: WebSocket):
         await websocket.accept()
@@ -102,15 +104,29 @@ class NotificationEngine:
         except Exception as e:
             logger.warning(f"Error sending Expo push: {e}")
 
-    def register_action_future(self, action_id: str) -> asyncio.Future:
+    def register_action_future(self, action_id: str, action_secret: Optional[str] = None) -> asyncio.Future:
         """Registers a future so the CLI workflow can await user action from mobile."""
         loop = asyncio.get_event_loop()
         future = loop.create_future()
         self.action_futures[action_id] = future
+        if action_secret:
+            self.action_secrets[action_id] = action_secret
         return future
+
+    def verify_action_secret(self, action_id: str, action_secret: Optional[str]) -> bool:
+        """Verifies if the provided action secret matches the one issued for this action."""
+        import secrets
+        expected = self.action_secrets.get(action_id)
+        if not expected:
+            # If no secret was assigned, allow through (backwards compatibility)
+            return True
+        if not action_secret:
+            return False
+        return secrets.compare_digest(action_secret, expected)
 
     def resolve_action(self, action_id: str, response_value: str) -> bool:
         """Called when user submits their OTP or action response from mobile."""
+        self.action_secrets.pop(action_id, None)
         if action_id in self.action_futures:
             future = self.action_futures[action_id]
             if not future.done():

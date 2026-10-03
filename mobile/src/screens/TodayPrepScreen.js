@@ -18,6 +18,7 @@ export default function TodayPrepScreen({
   loading,
   onRefresh,
   hubUrl,
+  hubToken,
   connected,
   onTriggerSlot,
 }) {
@@ -27,12 +28,17 @@ export default function TodayPrepScreen({
   const slotProgress = dailyData?.slot_progress || {};
   const activeSlotId = dailyData?.active_slot_id;
 
+  const authHeaders = {
+    'Content-Type': 'application/json',
+    ...(hubToken ? { 'X-Hub-Token': hubToken, 'Authorization': `Bearer ${hubToken}` } : {}),
+  };
+
   const handleManualTrigger = async () => {
     setTriggering(true);
     try {
       const res = await fetch(`${hubUrl}/api/qna/trigger`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: authHeaders,
         body: JSON.stringify({ force: true }),
       });
       const data = await res.json();
@@ -56,6 +62,7 @@ export default function TodayPrepScreen({
     try {
       await fetch(`${hubUrl}/api/qna/${itemId}/mastered?mastered=${isMastered}`, {
         method: 'POST',
+        headers: authHeaders,
       });
     } catch (e) {
       console.log('Error updating mastered status:', e);
