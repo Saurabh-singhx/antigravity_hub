@@ -182,3 +182,16 @@ dependencies {
         implementation jscFlavor
     }
 }
+
+// Automated Pre-Build Test Hook: runs backend and mobile test suites before compiling release APK
+tasks.register("runPreBuildTests", Exec) {
+    group = "verification"
+    description = "Runs backend and mobile test suites before building APK"
+    def testScript = file("${projectRoot}/../run_tests.sh")
+    workingDir = file("${projectRoot}/..")
+    commandLine "bash", testScript.absolutePath
+}
+
+tasks.matching { it.name == "assembleRelease" || it.name == "bundleRelease" }.configureEach {
+    dependsOn "runPreBuildTests"
+}

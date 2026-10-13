@@ -558,12 +558,20 @@ function MainContainer() {
         {activeTab === 'ALERTS' && (
           <AlertsScreen
             notifications={notifications}
+            hubUrl={hubUrl}
+            hubToken={hubToken}
             loading={loadingNotifs}
             onRefresh={() => fetchNotifications(hubUrl, hubToken)}
             onDismiss={handleDismissNotification}
             onSubmitAction={handleSubmitAction}
             onOpenScreenshot={(url) => {
               let finalUrl = url;
+              if (finalUrl && hubUrl) {
+                finalUrl = finalUrl.replace(/http:\/\/(localhost|127\.0\.0\.1)(:\d+)?/, hubUrl);
+                if (finalUrl.startsWith('/')) {
+                  finalUrl = `${hubUrl}${finalUrl}`;
+                }
+              }
               if (finalUrl && hubToken && !finalUrl.includes('token=')) {
                 finalUrl += (finalUrl.includes('?') ? '&' : '?') + `token=${encodeURIComponent(hubToken)}`;
               }

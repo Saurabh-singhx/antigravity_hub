@@ -59,12 +59,17 @@ SCHEMA_STATEMENTS = [
         verified INTEGER DEFAULT 1,
         difficulty TEXT DEFAULT 'Medium',
         is_mastered INTEGER DEFAULT 0,
+        canonical_hash TEXT,
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
     )
     """,
     """
     CREATE INDEX IF NOT EXISTS idx_qna_date_slot 
     ON qna_questions(date, slot_id, created_at DESC)
+    """,
+    """
+    CREATE INDEX IF NOT EXISTS idx_qna_canonical_hash 
+    ON qna_questions(canonical_hash)
     """,
     """
     CREATE INDEX IF NOT EXISTS idx_qna_job_title 

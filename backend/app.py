@@ -9,7 +9,7 @@ import socket
 import time
 from typing import Any, Dict, List, Optional
 
-from fastapi import Depends, FastAPI, HTTPException, WebSocket, WebSocketDisconnect, status
+from fastapi import Depends, FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 
@@ -92,11 +92,11 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
-# Tightened CORS: strictly allows local development bundlers, rejects arbitrary internet origins
+# Tightened CORS: allows local dev bundlers and LAN origins for mobile clients
 app.add_middleware(
     CORSMiddleware,
     allow_origins=CORS_ALLOWED_ORIGINS,
-    allow_origin_regex=r"^http://(localhost|127\.0\.0\.1)(:\d+)?$",
+    allow_origin_regex=r"^http://(localhost|127\.0\.0\.1|192\.168\.\d+\.\d+|10\.\d+\.\d+\.\d+|172\.(1[6-9]|2[0-9]|3[0-1])\.\d+\.\d+)(:\d+)?$",
     allow_credentials=True,
     allow_methods=["GET", "POST", "DELETE", "OPTIONS"],
     allow_headers=["*"],
@@ -124,6 +124,108 @@ def get_screenshot(
     if not file_path.exists() or not file_path.is_file():
         raise HTTPException(status_code=404, detail="Screenshot not found")
     return FileResponse(path=str(file_path))
+
+
+@app.post("/api/screenshots/upload")
+async def upload_screenshots(
+    request: Request,
+    _token: str = Depends(verify_hub_token),
+):
+    """
+    Upload one or multiple screenshots from mobile app or web client.
+    Supports both multipart/form-data and application/json (base64).
+    Saves to SCREENSHOTS_DIR and returns public URLs with token.
+    """
+    saved_files = []
+    content_type = request.headers.get("content-type", "")
+
+    active_token = get_or_create_hub_token()
+    token_param = f"?token={active_token}" if active_token else ""
+
+    # Determine LAN IP for mobile reachability
+    lan_ip = "127.0.0.1"
+    try:
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        s.connect(("8.8.8.8", 80))
+        lan_ip = s.getsockname()[0]
+        s.close()
+    except Exception:
+        pass
+
+    port = 8765
+    if ACTIVE_PORT_FILE.exists():
+        try:
+            p = ACTIVE_PORT_FILE.read_text().strip()
+            if p.isdigit():
+                port = int(p)
+        except Exception:
+            pass
+
+    if "multipart/form-data" in content_type:
+        form = await request.form()
+        files_to_process = form.getlist("files") or form.getlist("images") or form.getlist("file") or form.getlist("image")
+        if not files_to_process:
+            for k, val in form.items():
+                if hasattr(val, "filename"):
+                    files_to_process.append(val)
+
+        for upload in files_to_process:
+            if hasattr(upload, "filename") and upload.filename:
+                orig_name = Path(upload.filename).name
+                ext = Path(orig_name).suffix.lower()
+                if ext not in (".png", ".jpg", ".jpeg", ".webp"):
+                    ext = ".png"
+                clean_stem = "".join(c for c in Path(orig_name).stem if c.isalnum() or c in ("-", "_"))[:32] or "screenshot"
+                filename = f"{int(time.time()*1000)}_{clean_stem}{ext}"
+                dest = SCREENSHOTS_DIR / filename
+                content = await upload.read()
+                dest.write_bytes(content)
+                url = f"http://{lan_ip}:{port}/api/screenshots/{filename}{token_param}"
+                saved_files.append({
+                    "filename": filename,
+                    "url": url,
+                    "path": str(dest.resolve()),
+                    "size": len(content),
+                })
+    else:
+        # JSON body with base64 images
+        try:
+            body = await request.json()
+            images = body.get("images") or body.get("screenshots") or []
+            if isinstance(images, str):
+                images = [images]
+            import base64
+            for idx, img_data in enumerate(images):
+                if not img_data:
+                    continue
+                if "base64," in img_data:
+                    img_data = img_data.split("base64,")[1]
+                raw_bytes = base64.b64decode(img_data)
+                filename = f"{int(time.time()*1000)}_upload_{idx+1}.png"
+                dest = SCREENSHOTS_DIR / filename
+                dest.write_bytes(raw_bytes)
+                url = f"http://{lan_ip}:{port}/api/screenshots/{filename}{token_param}"
+                saved_files.append({
+                    "filename": filename,
+                    "url": url,
+                    "path": str(dest.resolve()),
+                    "size": len(raw_bytes),
+                })
+        except Exception as e:
+            logger.warning(f"Error parsing upload payload: {e}")
+
+    if not saved_files:
+        raise HTTPException(status_code=400, detail="No valid screenshot images found in request")
+
+    logger.info(f"📸 Saved {len(saved_files)} uploaded screenshot(s) to {SCREENSHOTS_DIR}")
+    return {
+        "status": "ok",
+        "count": len(saved_files),
+        "files": saved_files,
+        "screenshot_paths": [f["path"] for f in saved_files],
+        "screenshot_urls": [f["url"] for f in saved_files],
+    }
+
 
 
 # Real-time WebSocket Endpoint (Protected with Hub Token)

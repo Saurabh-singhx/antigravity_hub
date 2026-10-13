@@ -1,0 +1,18 @@
+#!/usr/bin/env bash
+# Git pre-push hook for Antigravity Hub
+# Runs all backend and mobile test suites before allowing git push.
+
+REPO_ROOT="$(git rev-parse --show-toplevel)"
+
+echo -e "\n🛡️ [Git Hook] Running Antigravity Hub pre-push test validation..."
+
+"${REPO_ROOT}/run_tests.sh"
+STATUS=$?
+
+if [ $STATUS -ne 0 ]; then
+    echo -e "\n🚫 [Git Hook] Push aborted! Tests failed. Please fix test failures before pushing.\n"
+    exit 1
+fi
+
+echo -e "\n✅ [Git Hook] Verification complete. Proceeding with push...\n"
+exit 0

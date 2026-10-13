@@ -3,6 +3,7 @@ import {
   View,
   Text,
   FlatList,
+  ScrollView,
   TouchableOpacity,
   TextInput,
   Image,
@@ -10,12 +11,15 @@ import {
   ActivityIndicator,
   Alert,
 } from 'react-native';
+import * as ImagePicker from 'expo-image-picker';
 import { NeoColors } from '../theme/neomorphism';
 import NeoCard from '../components/NeoCard';
 import NeoPill from '../components/NeoPill';
 
 export default function AlertsScreen({
   notifications,
+  hubUrl,
+  hubToken,
   loading,
   onRefresh,
   onDismiss,
@@ -26,11 +30,108 @@ export default function AlertsScreen({
   const [activeTab, setActiveTab] = useState('ALL'); // ALL, JOBS, ACTIONS, ERRORS
   const [actionInputs, setActionInputs] = useState({});
   const [submittingAction, setSubmittingAction] = useState({});
+  const [expandedCards, setExpandedCards] = useState({});
+
+  const toggleExpand = (id) => {
+    setExpandedCards((prev) => ({ ...prev, [id]: !prev[id] }));
+  };
+
+  const resolveScreenshotUrl = (rawUrl) => {
+    if (!rawUrl) return null;
+    let u = String(rawUrl).trim();
+    if (!u) return null;
+
+    // Check if it points to a screenshot path
+    const screenshotMatch = u.match(/(\/(?:api\/)?screenshots\/[^\s?#]+)/);
+    const base = (hubUrl || '').replace(/\/+$/, '');
+
+    let finalUrl = u;
+    if (screenshotMatch && base) {
+      // Re-base directly onto the active hubUrl that the phone is actively connected to
+      const path = screenshotMatch[1].startsWith('/api/')
+        ? screenshotMatch[1]
+        : `/api${screenshotMatch[1]}`;
+      finalUrl = `${base}${path}`;
+    } else if (base) {
+      finalUrl = finalUrl.replace(/http:\/\/(localhost|127\.0\.0\.1)(:\d+)?/, base);
+      if (finalUrl.startsWith('/')) {
+        finalUrl = `${base}${finalUrl}`;
+      }
+    }
+
+    // Preserve existing token in rawUrl or append active hubToken
+    const rawTokenMatch = u.match(/[?&]token=([^&]+)/);
+    const token = (rawTokenMatch && rawTokenMatch[1]) || hubToken || '';
+    if (token && !finalUrl.includes('token=')) {
+      finalUrl += (finalUrl.includes('?') ? '&' : '?') + `token=${encodeURIComponent(token)}`;
+    }
+    return finalUrl;
+  };
 
   const handleAction = async (actionId, value) => {
     setSubmittingAction((prev) => ({ ...prev, [actionId]: true }));
     try {
       await onSubmitAction(actionId, value);
+    } finally {
+      setSubmittingAction((prev) => ({ ...prev, [actionId]: false }));
+    }
+  };
+
+  const handlePickAndUploadScreenshots = async (actionId) => {
+    setSubmittingAction((prev) => ({ ...prev, [actionId]: true }));
+    try {
+      const permission = await ImagePicker.requestMediaLibraryPermissionsAsync();
+      if (!permission.granted) {
+        Alert.alert('Permission Denied', 'Please grant access to your photo gallery to attach screenshots.');
+        return;
+      }
+
+      const pickerResult = await ImagePicker.launchImageLibraryAsync({
+        mediaTypes: ['images'],
+        allowsMultipleSelection: true,
+        quality: 0.85,
+        base64: true,
+      });
+
+      if (pickerResult.canceled || !pickerResult.assets || pickerResult.assets.length === 0) {
+        return;
+      }
+
+      const imagesBase64 = pickerResult.assets
+        .map((a) => (a.base64 ? `data:image/png;base64,${a.base64}` : null))
+        .filter(Boolean);
+
+      if (imagesBase64.length === 0) {
+        Alert.alert('Error', 'Could not read image content from gallery.');
+        return;
+      }
+
+      const base = (hubUrl || '').replace(/\/+$/, '');
+      const uploadRes = await fetch(`${base}/api/screenshots/upload`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          ...(hubToken ? { 'X-Hub-Token': hubToken, 'Authorization': `Bearer ${hubToken}` } : {}),
+        },
+        body: JSON.stringify({ images: imagesBase64 }),
+      });
+
+      if (!uploadRes.ok) {
+        throw new Error(`Upload failed with status ${uploadRes.status}`);
+      }
+
+      const uploadData = await uploadRes.json();
+      const paths = uploadData.screenshot_paths || [];
+      if (paths.length === 0) {
+        throw new Error('No saved screenshot paths returned by relay');
+      }
+
+      // Deliver uploaded paths to the waiting workflow
+      await onSubmitAction(actionId, JSON.stringify(paths));
+      Alert.alert('Success', `Attached and uploaded ${paths.length} screenshot(s)!`);
+    } catch (err) {
+      console.log('Image picker / upload error:', err);
+      Alert.alert('Upload Error', err.message || 'Could not upload screenshots to relay.');
     } finally {
       setSubmittingAction((prev) => ({ ...prev, [actionId]: false }));
     }
@@ -77,7 +178,43 @@ export default function AlertsScreen({
     const actionPrompt = item.action_prompt || (item.action && item.action.prompt);
     const actionStatus = item.action_status || (item.action && item.action.status) || 'none';
     const actionResponse = item.action_response || (item.action && item.action.response_value);
+
+    let rawOptions =
+      (item.action && item.action.options) ||
+      item.action_options ||
+      item.options ||
+      [];
+    if (typeof rawOptions === 'string') {
+      try {
+        rawOptions = JSON.parse(rawOptions);
+      } catch (e) {
+        rawOptions = [rawOptions];
+      }
+    }
+    const actionOptions =
+      Array.isArray(rawOptions) && rawOptions.length > 0
+        ? rawOptions
+        : ['Approve & Publish', 'Recreate Draft', 'Cancel'];
+
     const isPending = actionStatus === 'pending';
+    const resolvedScreenshot = resolveScreenshotUrl(item.screenshot_url);
+
+    let metaObj = item.metadata;
+    if (!metaObj && item.metadata_json) {
+      try {
+        metaObj = JSON.parse(item.metadata_json);
+      } catch (e) {}
+    }
+
+    let allScreenshotUrls = [];
+    if (metaObj && Array.isArray(metaObj.screenshot_urls) && metaObj.screenshot_urls.length > 0) {
+      allScreenshotUrls = metaObj.screenshot_urls.map(resolveScreenshotUrl).filter(Boolean);
+    } else if (resolvedScreenshot) {
+      allScreenshotUrls = [resolvedScreenshot];
+    }
+    const fullDraft = (metaObj && metaObj.post_content) || item.message || '';
+    const hasLongContent = fullDraft.length > 100 || fullDraft.includes('\n');
+    const isExpanded = Boolean(expandedCards[item.id]);
 
     return (
       <NeoCard style={[styles.card, { borderLeftColor: levelColor, borderLeftWidth: 4 }]}>
@@ -104,16 +241,90 @@ export default function AlertsScreen({
         </View>
 
         <Text style={styles.cardTitle}>{item.title}</Text>
-        <Text style={styles.cardMessage}>{item.message}</Text>
 
-        {item.screenshot_url ? (
+        {/* Content / Full Post Draft Preview */}
+        {hasLongContent ? (
+          <View style={styles.contentBox}>
+            <View style={styles.contentHeader}>
+              <Text style={styles.contentHeaderTitle}>
+                {item.category === 'linkedin_post' || (item.workflow || '').toLowerCase().includes('job')
+                  ? '📝 Post Draft Preview:'
+                  : '📋 Full Details:'}
+              </Text>
+              <Text style={styles.charCountText}>
+                {fullDraft.length} chars
+              </Text>
+            </View>
+
+            <Text
+              style={styles.contentText}
+              numberOfLines={isExpanded ? undefined : 6}
+              selectable={true}
+            >
+              {fullDraft}
+            </Text>
+
+            <TouchableOpacity
+              onPress={() => toggleExpand(item.id)}
+              style={styles.expandBarBtn}
+              activeOpacity={0.7}
+            >
+              <Text style={styles.expandBarBtnText}>
+                {isExpanded ? '▲ Collapse Draft' : '▼ Read Full Post & Details'}
+              </Text>
+            </TouchableOpacity>
+          </View>
+        ) : (
+          <Text style={styles.cardMessage} selectable={true}>{item.message}</Text>
+        )}
+
+        {/* Screenshot View(s) & Modal Opener */}
+        {allScreenshotUrls.length > 1 ? (
+          <View style={styles.multiScreenshotsBox}>
+            <View style={styles.multiScreenshotsHeader}>
+              <Text style={styles.multiScreenshotsTitle}>
+                📸 {allScreenshotUrls.length} Screenshots Attached:
+              </Text>
+              <Text style={styles.multiScreenshotsHint}>Swipe ➔</Text>
+            </View>
+            <ScrollView
+              horizontal
+              showsHorizontalScrollIndicator={false}
+              style={styles.carouselScroll}
+              contentContainerStyle={{ paddingRight: 10 }}
+            >
+              {allScreenshotUrls.map((url, idx) => (
+                <TouchableOpacity
+                  key={idx}
+                  onPress={() => onOpenScreenshot(allScreenshotUrls)}
+                  style={styles.carouselItem}
+                  activeOpacity={0.85}
+                >
+                  <Image
+                    source={{ uri: url }}
+                    style={styles.carouselThumbnail}
+                    resizeMode="cover"
+                  />
+                  <View style={styles.carouselBadge}>
+                    <Text style={styles.carouselBadgeText}>#{idx + 1}</Text>
+                  </View>
+                </TouchableOpacity>
+              ))}
+            </ScrollView>
+          </View>
+        ) : allScreenshotUrls.length === 1 ? (
           <TouchableOpacity
-            onPress={() => onOpenScreenshot(item.screenshot_url)}
+            onPress={() => onOpenScreenshot(allScreenshotUrls[0])}
             style={styles.imageBox}
+            activeOpacity={0.85}
           >
-            <Image source={{ uri: item.screenshot_url }} style={styles.thumbnail} resizeMode="cover" />
+            <Image
+              source={{ uri: allScreenshotUrls[0] }}
+              style={styles.thumbnail}
+              resizeMode="cover"
+            />
             <View style={styles.imageOverlay}>
-              <Text style={styles.imageOverlayText}>🔍 Tap to View Screenshot</Text>
+              <Text style={styles.imageOverlayText}>🔍 Tap to View Fullscreen Screenshot</Text>
             </View>
           </TouchableOpacity>
         ) : null}
@@ -123,15 +334,53 @@ export default function AlertsScreen({
           <View style={styles.actionBox}>
             <Text style={styles.actionPromptText}>⚠️ {actionPrompt || 'Action Required:'}</Text>
 
-            {actionType === 'input' ? (
+            {actionType === 'screenshot_upload' ? (
+              <View style={styles.screenshotActionCol}>
+                <TouchableOpacity
+                  style={[styles.choiceBtn, { backgroundColor: '#4f46e5', paddingVertical: 12, marginBottom: 8 }]}
+                  disabled={submittingAction[actionId]}
+                  onPress={() => handlePickAndUploadScreenshots(actionId)}
+                >
+                  {submittingAction[actionId] ? (
+                    <ActivityIndicator size="small" color="#fff" />
+                  ) : (
+                    <Text style={styles.choiceBtnText}>🖼️ Pick Photos from Phone Gallery</Text>
+                  )}
+                </TouchableOpacity>
+
+                <View style={styles.inputRow}>
+                  <TextInput
+                    style={styles.actionInput}
+                    placeholder="Or enter path / URL..."
+                    placeholderTextColor="#94a3b8"
+                    value={actionInputs[actionId] || ''}
+                    onChangeText={(val) => setActionInputs((prev) => ({ ...prev, [actionId]: val }))}
+                  />
+                  <TouchableOpacity
+                    style={[styles.choiceBtn, { backgroundColor: '#0284c7', minWidth: 65 }]}
+                    disabled={submittingAction[actionId]}
+                    onPress={() => handleAction(actionId, actionInputs[actionId] || 'SKIP')}
+                  >
+                    <Text style={styles.choiceBtnText}>Submit</Text>
+                  </TouchableOpacity>
+                </View>
+
+                <TouchableOpacity
+                  style={styles.skipBtn}
+                  disabled={submittingAction[actionId]}
+                  onPress={() => handleAction(actionId, 'SKIP')}
+                >
+                  <Text style={styles.skipBtnText}>⏩ Skip Screenshots (Post Text-Only)</Text>
+                </TouchableOpacity>
+              </View>
+            ) : actionType === 'input' ? (
               <View style={styles.inputRow}>
                 <TextInput
                   style={styles.actionInput}
-                  placeholder="Enter code (e.g. OTP)..."
+                  placeholder="Enter code or response..."
                   placeholderTextColor="#94a3b8"
                   value={actionInputs[actionId] || ''}
                   onChangeText={(val) => setActionInputs((prev) => ({ ...prev, [actionId]: val }))}
-                  keyboardType="numeric"
                 />
                 <TouchableOpacity
                   style={styles.actionSubmitBtn}
@@ -147,18 +396,36 @@ export default function AlertsScreen({
               </View>
             ) : (
               <View style={styles.btnRow}>
-                <TouchableOpacity
-                  style={[styles.choiceBtn, { backgroundColor: '#10b981' }]}
-                  onPress={() => handleAction(actionId, 'APPROVE')}
-                >
-                  <Text style={styles.choiceBtnText}>✓ Approve & Submit</Text>
-                </TouchableOpacity>
-                <TouchableOpacity
-                  style={[styles.choiceBtn, { backgroundColor: '#64748b' }]}
-                  onPress={() => handleAction(actionId, 'SKIP')}
-                >
-                  <Text style={styles.choiceBtnText}>✕ Skip</Text>
-                </TouchableOpacity>
+                {actionOptions.map((opt, idx) => {
+                  const optUpper = String(opt).toUpperCase();
+                  const isApprove = optUpper.includes('APPROVE') || optUpper.includes('POST') || optUpper.includes('YES');
+                  const isRecreate = optUpper.includes('RECREATE') || optUpper.includes('REGENERATE') || optUpper.includes('EDIT');
+                  const isCancel = optUpper.includes('CANCEL') || optUpper.includes('SKIP') || optUpper.includes('REJECT');
+
+                  let bgColor = '#475569';
+                  let icon = '• ';
+                  if (isApprove) {
+                    bgColor = '#10b981';
+                    icon = '✓ ';
+                  } else if (isRecreate) {
+                    bgColor = '#0284c7';
+                    icon = '🔄 ';
+                  } else if (isCancel) {
+                    bgColor = '#ef4444';
+                    icon = '✕ ';
+                  }
+
+                  return (
+                    <TouchableOpacity
+                      key={idx}
+                      style={[styles.choiceBtn, { backgroundColor: bgColor, minWidth: 95, marginVertical: 3 }]}
+                      disabled={submittingAction[actionId]}
+                      onPress={() => handleAction(actionId, opt)}
+                    >
+                      <Text style={styles.choiceBtnText}>{icon}{opt}</Text>
+                    </TouchableOpacity>
+                  );
+                })}
               </View>
             )}
           </View>
@@ -315,6 +582,58 @@ const styles = StyleSheet.create({
     color: NeoColors.textSecondary,
     lineHeight: 17,
   },
+  contentBox: {
+    marginTop: 8,
+    backgroundColor: '#f8fafc',
+    borderRadius: 8,
+    padding: 10,
+    borderWidth: 1,
+    borderColor: '#e2e8f0',
+  },
+  contentHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 6,
+    borderBottomWidth: 1,
+    borderBottomColor: '#f1f5f9',
+    paddingBottom: 4,
+  },
+  contentHeaderTitle: {
+    fontSize: 11,
+    fontWeight: '700',
+    color: '#334155',
+  },
+  charCountText: {
+    fontSize: 10,
+    fontWeight: '600',
+    color: '#64748b',
+    backgroundColor: '#e2e8f0',
+    paddingHorizontal: 6,
+    paddingVertical: 1,
+    borderRadius: 4,
+  },
+  expandBarBtn: {
+    marginTop: 8,
+    paddingVertical: 5,
+    paddingHorizontal: 8,
+    backgroundColor: '#e0f2fe',
+    borderRadius: 6,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderWidth: 1,
+    borderColor: '#bae6fd',
+  },
+  expandBarBtnText: {
+    fontSize: 11,
+    fontWeight: '700',
+    color: '#0284c7',
+  },
+  contentText: {
+    fontSize: 12,
+    color: '#1e293b',
+    lineHeight: 18,
+  },
   imageBox: {
     marginTop: 10,
     borderRadius: 10,
@@ -384,17 +703,25 @@ const styles = StyleSheet.create({
   },
   btnRow: {
     flexDirection: 'row',
+    flexWrap: 'wrap',
     gap: 8,
   },
   choiceBtn: {
-    flex: 1,
-    paddingVertical: 8,
+    flexGrow: 1,
+    paddingVertical: 9,
+    paddingHorizontal: 12,
     alignItems: 'center',
+    justifyContent: 'center',
     borderRadius: 8,
+    elevation: 2,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 1 },
+    shadowOpacity: 0.15,
+    shadowRadius: 1.5,
   },
   choiceBtnText: {
     color: '#ffffff',
-    fontWeight: 'bold',
+    fontWeight: '700',
     fontSize: 12,
   },
   resolvedBox: {
@@ -432,5 +759,79 @@ const styles = StyleSheet.create({
     color: NeoColors.textSecondary,
     textAlign: 'center',
     lineHeight: 18,
+  },
+  multiScreenshotsBox: {
+    marginTop: 10,
+    backgroundColor: '#f1f5f9',
+    borderRadius: 10,
+    padding: 8,
+    borderWidth: 1,
+    borderColor: '#cbd5e1',
+  },
+  multiScreenshotsHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 6,
+    paddingHorizontal: 2,
+  },
+  multiScreenshotsTitle: {
+    fontSize: 11,
+    fontWeight: '700',
+    color: '#334155',
+  },
+  multiScreenshotsHint: {
+    fontSize: 10,
+    fontWeight: '600',
+    color: '#0284c7',
+  },
+  carouselScroll: {
+    flexDirection: 'row',
+  },
+  carouselItem: {
+    width: 175,
+    height: 110,
+    borderRadius: 8,
+    overflow: 'hidden',
+    marginRight: 8,
+    position: 'relative',
+    borderWidth: 1,
+    borderColor: '#94a3b8',
+    backgroundColor: '#e2e8f0',
+  },
+  carouselThumbnail: {
+    width: '100%',
+    height: '100%',
+  },
+  carouselBadge: {
+    position: 'absolute',
+    top: 5,
+    right: 5,
+    backgroundColor: 'rgba(15, 23, 42, 0.75)',
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+    borderRadius: 4,
+  },
+  carouselBadgeText: {
+    color: '#38bdf8',
+    fontSize: 10,
+    fontWeight: 'bold',
+  },
+  screenshotActionCol: {
+    marginTop: 4,
+  },
+  skipBtn: {
+    paddingVertical: 8,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderRadius: 6,
+    backgroundColor: '#f1f5f9',
+    borderWidth: 1,
+    borderColor: '#cbd5e1',
+  },
+  skipBtnText: {
+    fontSize: 11,
+    color: '#64748b',
+    fontWeight: '700',
   },
 });

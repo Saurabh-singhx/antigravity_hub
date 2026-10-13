@@ -53,21 +53,9 @@ systemctl --user restart antigravity-hub.service
 # Enable lingering so user services start automatically on boot without waiting for GUI login
 loginctl enable-linger "$USER" 2>/dev/null || true
 
-# Add XDG autostart desktop entry for graphical desktop session guarantee
-AUTOSTART_DIR="$HOME/.config/autostart"
-mkdir -p "$AUTOSTART_DIR"
-cat <<EOF > "$AUTOSTART_DIR/antigravity-hub.desktop"
-[Desktop Entry]
-Type=Application
-Exec=$DIR/run_backend.sh
-Hidden=false
-NoDisplay=false
-X-GNOME-Autostart-enabled=true
-Name=Antigravity Hub
-Comment=Start Antigravity Hub Relay on Login
-EOF
-
-echo "✓ Created XDG desktop autostart entry at $AUTOSTART_DIR/antigravity-hub.desktop"
+# Clean up any legacy XDG desktop autostart entry to prevent port collision with systemd
+rm -f "$HOME/.config/autostart/antigravity-hub.desktop"
+echo "✓ Verified no conflicting XDG desktop autostart entries"
 echo "=========================================================="
 echo "✅ Antigravity Hub is configured to auto-start on PC boot!"
 echo ""

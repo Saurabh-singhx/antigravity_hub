@@ -43,10 +43,18 @@ class QnAExtractorSkill:
             clean_question = re.sub(r"^(?:Q(?:\d+)?:|\d+[\.\)]\s*)", "", clean_question).strip()
             clean_question = clean_question.strip("*_` ")
 
+            # Header must match question patterns or end with '?'
+            is_q_header = any(pat.search(header_line) for pat in cls.QUESTION_HEADER_PATTERNS) or clean_question.endswith("?")
+            if not is_q_header:
+                continue
+
             # Skip if header is generic title or navigation
-            if len(clean_question) < 10 or clean_question.lower() in (
-                "table of contents", "contents", "license", "contributing", "overview", "introduction"
-            ):
+            clean_lower = clean_question.lower()
+            if len(clean_question) < 14 or any(g in clean_lower for g in (
+                "table of contents", "contents", "license", "contributing", "overview",
+                "introduction", "motivation", "features", "installation", "getting started",
+                "what is this", "why would you read", "learn from the open source"
+            )):
                 continue
 
             answer_body = "\n".join(lines[1:]).strip()

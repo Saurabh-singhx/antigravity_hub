@@ -9,6 +9,7 @@ from config.settings import DB_PATH
 from database.schema import SCHEMA_STATEMENTS
 from models.notifications import ActionStatus, NotificationPayload
 from models.qna import QnAItem, QnASource, SlotExecution
+from utils.deduplicator import compute_canonical_hash
 
 logger = logging.getLogger("AntigravityHub.DB")
 
@@ -30,7 +31,33 @@ class DatabaseManager:
         with self._get_connection() as conn:
             c = conn.cursor()
             for stmt in SCHEMA_STATEMENTS:
-                c.execute(stmt)
+                try:
+                    c.execute(stmt)
+                except Exception as e:
+                    # Index might fail on existing tables before column migration
+                    pass
+
+            # Migration: Ensure canonical_hash exists on qna_questions
+            c.execute("PRAGMA table_info(qna_questions)")
+            cols = [r["name"] for r in c.fetchall()]
+            if "canonical_hash" not in cols:
+                try:
+                    c.execute("ALTER TABLE qna_questions ADD COLUMN canonical_hash TEXT")
+                except Exception as e:
+                    logger.debug(f"Migration note for canonical_hash: {e}")
+
+            try:
+                c.execute("CREATE INDEX IF NOT EXISTS idx_qna_canonical_hash ON qna_questions(canonical_hash)")
+            except Exception as e:
+                logger.debug(f"Index creation note for canonical_hash: {e}")
+
+            # Backfill any null canonical_hash
+            c.execute("SELECT id, question FROM qna_questions WHERE canonical_hash IS NULL OR canonical_hash = ''")
+            missing = c.fetchall()
+            for row in missing:
+                chash = compute_canonical_hash(row["question"])
+                c.execute("UPDATE qna_questions SET canonical_hash = ? WHERE id = ?", (chash, row["id"]))
+
             conn.commit()
 
     # =========================================================================
@@ -234,6 +261,7 @@ class DatabaseManager:
             c = conn.cursor()
             for q in items:
                 tech_stack_json = json.dumps(q.tech_stack)
+                chash = q.canonical_hash or compute_canonical_hash(q.question)
                 c.execute(
                     """
                     INSERT OR REPLACE INTO qna_questions (
@@ -241,8 +269,8 @@ class DatabaseManager:
                         question, answer, category, tech_stack_json,
                         source_type, source_name, source_url, source_quote,
                         source_stars, reliability_score, verified, difficulty,
-                        is_mastered, created_at
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        is_mastered, canonical_hash, created_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         q.id,
@@ -264,6 +292,7 @@ class DatabaseManager:
                         1 if q.source.verified else 0,
                         q.difficulty,
                         1 if q.is_mastered else 0,
+                        chash,
                         q.created_at or time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
                     ),
                 )
@@ -304,8 +333,44 @@ class DatabaseManager:
             source=source,
             difficulty=d.get("difficulty") or "Medium",
             is_mastered=bool(d.get("is_mastered", 0)),
+            canonical_hash=d.get("canonical_hash"),
             created_at=d.get("created_at"),
         )
+
+    def get_recent_question_texts(self, limit: int = 500) -> List[Dict[str, Any]]:
+        """Returns recent questions and their canonical hashes for deduplication."""
+        with self._get_connection() as conn:
+            c = conn.cursor()
+            c.execute(
+                """
+                SELECT id, question, canonical_hash, slot_id, date, is_mastered
+                FROM qna_questions
+                ORDER BY created_at DESC
+                LIMIT ?
+                """,
+                (limit,),
+            )
+            return [dict(r) for r in c.fetchall()]
+
+    def clean_duplicate_questions(self) -> int:
+        """Removes historical duplicate questions from database, keeping the earliest instance."""
+        with self._get_connection() as conn:
+            c = conn.cursor()
+            c.execute(
+                """
+                DELETE FROM qna_questions
+                WHERE id NOT IN (
+                    SELECT MIN(id)
+                    FROM qna_questions
+                    GROUP BY COALESCE(canonical_hash, question)
+                )
+                """
+            )
+            deleted = c.rowcount
+            conn.commit()
+            if deleted > 0:
+                logger.info(f"Cleaned up {deleted} duplicate questions from database.")
+            return deleted
 
     def get_daily_qna(self, date_str: str) -> List[QnAItem]:
         """Fetches questions created for the specified date."""

@@ -1,8 +1,9 @@
 # Antigravity Hub • Backend Architecture & Security Blueprint
 
-**Version:** 2.1.0  
-**Stack:** FastAPI • Python 3.12 • SQLite3 • WebSockets • Expo Push API • Systemd Service  
-**Repository Path:** [`backend/`](file:///home/saurabh/coding/antigravity_hub/backend)
+**Version:** 2.2.0  
+**Stack:** FastAPI • Python 3.12 • SQLite3 • RapidFuzz • WebSockets • Expo Push API • Systemd Service  
+**Repository Path:** [`backend/`](file:///home/saurabh/coding/antigravity_hub/backend)  
+**Master Architecture & Evolution Blueprint:** [`../ARCHITECTURE.md`](file:///home/saurabh/coding/antigravity_hub/ARCHITECTURE.md)
 
 ---
 
@@ -21,8 +22,10 @@ flowchart TD
         subgraph MultiAgentEngine ["Autonomous Multi-Agent Prep Engine"]
             Collector["JobCollectorAgent"] --> Discovery["SourceDiscoveryAgent"]
             Discovery --> Safety["SafetyGuardSkill"]
-            Safety --> Retriever["QnARetrieverAgent"]
-            Retriever --> Verifier["AnswerVerifierSkill"]
+            Safety --> Retriever["QnARetrieverAgent (48 Verified Bank)"]
+            Retriever --> Verifier["VerificationAgent"]
+            Verifier --> AnswerVerifier["AnswerVerifierSkill"]
+            Verifier --> DedupEngine["DeduplicationEngine (RapidFuzz + SHA256)"]
             Verifier --> Curator["CuratorDispatchAgent"]
         end
         
@@ -121,12 +124,14 @@ sequenceDiagram
     CD->>WS: Broadcast qna_updated Event & Notification
 ```
 
-### Agent Roles:
-1. [`JobCollectorAgent`](file:///home/saurabh/coding/antigravity_hub/backend/agents/job_collector.py): Connects to `auto_job_apply/data/job_applications.db` and extracts active skills.
+### Agent Roles & Skills:
+1. [`JobCollectorAgent`](file:///home/saurabh/coding/antigravity_hub/backend/agents/job_collector.py): Connects to `auto_job_apply/data/job_applications.db` and extracts active target job skills.
 2. [`SourceDiscoveryAgent`](file:///home/saurabh/coding/antigravity_hub/backend/agents/source_discovery.py): Scans curated repos (`yangshun/tech-interview-handbook`, `donnemartin/system-design-primer`, etc.) and LeetCode/Engineering Blogs.
-3. [`SafetyGuardSkill`](file:///home/saurabh/coding/antigravity_hub/backend/agents/skills/safety_guard.py): Whitelists safe domains, enforces file size limits, and blocks all executable extensions (`.sh`, `.exe`, `.bin`, `.py`).
-4. [`AnswerVerifierSkill`](file:///home/saurabh/coding/antigravity_hub/backend/agents/skills/answer_verifier.py): Rejects hallucinated, incomplete, or ungrounded Q&A items. Requires verifiable citation and source quote.
-5. [`CuratorDispatchAgent`](file:///home/saurabh/coding/antigravity_hub/backend/agents/curator_dispatch.py): Formats questions with difficulty and category, saves to database, and triggers push notifications.
+3. [`SafetyGuardSkill`](file:///home/saurabh/coding/antigravity_hub/backend/agents/skills/safety_guard.py): Whitelists safe domains, enforces file size limits (< 500 KB), and blocks all executable extensions (`.sh`, `.exe`, `.bin`, `.py`).
+4. [`QnARetrieverAgent`](file:///home/saurabh/coding/antigravity_hub/backend/agents/qna_retriever.py): Retries network requests with exponential backoff and maintains a 48-item verified seed bank (16 questions per slot).
+5. [`VerificationAgent`](file:///home/saurabh/coding/antigravity_hub/backend/agents/verifier.py) & [`AnswerVerifierSkill`](file:///home/saurabh/coding/antigravity_hub/backend/agents/skills/answer_verifier.py): Rejects hallucinated, incomplete, or ungrounded Q&A items. Requires verifiable citation, source quote, and interview phrasing.
+6. [`DeduplicationEngine`](file:///home/saurabh/coding/antigravity_hub/backend/utils/deduplicator.py): Eliminates exact matches and 85–100% near-duplicates using Canonical Hash fingerprints ($O(1)$) and RapidFuzz token set/sort ratio.
+7. [`CuratorDispatchAgent`](file:///home/saurabh/coding/antigravity_hub/backend/agents/curator_dispatch.py): Formats questions with difficulty and category, saves to database, and triggers push notifications.
 
 ---
 

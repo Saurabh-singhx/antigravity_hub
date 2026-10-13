@@ -71,12 +71,18 @@ class QnAOrchestrator:
             vetted_sources=vetted_sources,
         )
 
-        # Step 4: Rigorous verification & anti-hallucination check
+        # Step 4: Rigorous verification, anti-hallucination check, and multi-tier deduplication
+        recent_records = self.db.get_recent_question_texts(limit=500)
+        existing_questions = [r["question"] for r in recent_records if r.get("question")]
+        existing_hashes = {r["canonical_hash"] for r in recent_records if r.get("canonical_hash")}
+
         verified_items = self.verifier.verify_and_structure_candidates(
             candidates=raw_candidates,
             slot_id=slot_id,
             target_date=today_date,
             max_items=QUESTIONS_PER_SLOT,
+            existing_questions=existing_questions,
+            existing_hashes=existing_hashes,
         )
 
         if not verified_items:

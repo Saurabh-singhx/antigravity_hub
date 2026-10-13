@@ -26,6 +26,7 @@ class QnAItem(BaseModel):
     source: QnASource
     difficulty: str = "Medium"                # "Easy" | "Medium" | "Hard"
     is_mastered: bool = False
+    canonical_hash: Optional[str] = None
     created_at: Optional[str] = None
 
 

@@ -1,8 +1,9 @@
 # Antigravity Hub • Mobile Client Architecture & Design System
 
-**Version:** 2.1.0  
-**Framework:** React Native 0.86.3 • React 19.2.3 • Expo SDK 57 • AsyncStorage • Expo Notifications  
-**Repository Path:** [`mobile/`](file:///home/saurabh/coding/antigravity_hub/mobile)
+**Version:** 2.2.0  
+**Framework:** React Native 0.86.3 • React 19.2.3 • Expo SDK 57 • Kotlin • Android Room SQLite • Expo Notifications  
+**Repository Path:** [`mobile/`](file:///home/saurabh/coding/antigravity_hub/mobile)  
+**Master Architecture & Evolution Blueprint:** [`../ARCHITECTURE.md`](file:///home/saurabh/coding/antigravity_hub/ARCHITECTURE.md)
 
 ---
 
@@ -170,3 +171,27 @@ Configured via `expo-notifications`:
 - **Android 13+ Runtime Permissions**: Automatically requests `POST_NOTIFICATIONS` permission on boot.
 - **High-Priority Channel**: Configured with `importance: MAX`, custom vibration rhythm (`[0, 250, 250, 250]`), and bypass-DND flags.
 - **Zero-Latency WebSocket Banners**: Incoming WebSocket payloads trigger native Android notification drawer banners so you receive alerts even when glancing away from the screen.
+
+---
+
+## 🚀 Native Android Background Architecture (`mobile/android/`)
+
+To guarantee real-time alert delivery even when the app is completely swiped away or closed:
+
+### 1. `HubForegroundService.kt`
+- Implements an Android native `Service` configured with `FOREGROUND_SERVICE_TYPE_DATA_SYNC`.
+- Maintains an ongoing, low-profile notification (*"Antigravity Hub Active"*).
+- Establishes a background OkHttp WebSocket connection directly to the backend relay with 20s ping heartbeats and 5s exponential reconnection.
+
+### 2. Native Kotlin to React Native AsyncStorage Bridge (`RKStorage` Room DB)
+- **The Problem**: In modern React Native versions, `@react-native-async-storage/async-storage` does not store keys in `SharedPreferences`. Instead, it writes to an internal SQLite database managed by Android Room (`RKStorage` / `catalystLocalStorage`).
+- **The Solution**: `HubForegroundService.kt` directly queries the SQLite database on disk:
+  ```kotlin
+  val db = SQLiteDatabase.openDatabase(dbFile.path, null, SQLiteDatabase.OPEN_READONLY)
+  val cursor = db.rawQuery("SELECT value FROM catalystLocalStorage WHERE key = ?", arrayOf("antigravity_hub_token"))
+  ```
+  This enables the background Kotlin service to authenticate WebSocket connections seamlessly without needing the React Native JavaScript engine to be awake!
+
+### 3. `BootReceiver.kt`
+- Listens for `Intent.ACTION_BOOT_COMPLETED` and starts `HubForegroundService` automatically when the phone turns on.
+

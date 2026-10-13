@@ -13,6 +13,22 @@ class AnswerVerifierSkill:
 
     PLACEHOLDER_WORDS = {"todo", "tbd", "coming soon", "n/a", "unknown", "placeholder"}
 
+    GENERIC_HEADINGS = {
+        "motivation", "features", "installation", "getting started", "what is this",
+        "why would you read", "why read this", "who is this for", "how to use",
+        "usage", "license", "table of contents", "contents", "contributing", "contributors",
+        "acknowledgements", "support", "author", "authors", "summary", "disclaimer",
+        "sponsor", "sponsors", "learn more", "overview", "introduction", "quick start",
+        "about", "credits", "faq", "changelog", "roadmap", "prerequisites",
+    }
+
+    QUESTION_STARTERS = (
+        "what", "how", "why", "when", "where", "which", "who", "whom",
+        "explain", "describe", "compare", "contrast", "difference", "differences",
+        "implement", "design", "discuss", "tell me", "can you", "write", "does",
+        "is", "are", "would", "should", "could"
+    )
+
     @classmethod
     def verify_groundedness(cls, item: Dict[str, Any]) -> Tuple[bool, str]:
         """Validates that question & answer are authentic and grounded in a source."""
@@ -22,8 +38,16 @@ class AnswerVerifierSkill:
         source_url = (item.get("source_url") or "").strip()
 
         # 1. Question validation
-        if len(question) < 8:
-            return False, "Question is too short (< 8 characters)"
+        if len(question) < 12:
+            return False, "Question is too short (< 12 characters)"
+
+        q_lower = question.lower().strip("*_` #")
+        if q_lower in cls.GENERIC_HEADINGS or any(q_lower.startswith(g) for g in cls.GENERIC_HEADINGS):
+            return False, f"Generic documentation heading, not an interview question: '{question}'"
+
+        # Genuine questions either end with '?' or start with standard interview question phrasing
+        if not (question.endswith("?") or q_lower.startswith(cls.QUESTION_STARTERS)):
+            return False, f"Question lacks interrogative or technical interview structure: '{question}'"
 
         # 2. Answer completeness
         if len(answer) < 35:
